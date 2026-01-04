@@ -178,14 +178,38 @@
         let app, auth, db, provider;
         let appId = 'link-archive-default';
 
+        // [중요] GitHub 배포 시 아래 manualConfig에 본인의 Firebase 프로젝트 설정값을 넣어주세요.
+        // Firebase 콘솔 -> 프로젝트 설정 -> 일반 -> 내 앱 -> SDK 설정 및 구성 에서 복사 가능합니다.
+        const manualConfig = {
+            apiKey: "AIzaSyAwce-grzTZfo2pOQAtQEmMip7Tkk1YQmA",
+            authDomain: "link-archive-b6659.firebaseapp.com",
+            projectId: "link-archive-b6659",
+            storageBucket: "link-archive-b6659.firebasestorage.app",
+            messagingSenderId: "373180975760",
+            appId: "1:373180975760:web:dec63ed4b157fa0927a615",
+            measurementId: "G-JDBW780Z79"
+        };
+
         try {
-            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-            appId = typeof __app_id !== 'undefined' ? __app_id : 'link-archive-default';
+            // 1. 먼저 Canvas 환경의 자동 설정값을 확인합니다.
+            let firebaseConfig;
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = JSON.parse(__firebase_config);
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'link-archive-default';
+            } else {
+                // 2. 환경 변수가 없으면(배포 환경 등), 위에서 정의한 manualConfig를 사용합니다.
+                firebaseConfig = manualConfig;
+            }
             
-            app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
-            provider = new GoogleAuthProvider();
+            // 설정값이 비어있는지 확인
+            if (!firebaseConfig || !firebaseConfig.apiKey) {
+                console.warn("Firebase 설정이 비어있습니다.");
+            } else {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                provider = new GoogleAuthProvider();
+            }
         } catch (e) {
             console.error("Firebase initialization failed:", e);
         }
@@ -245,7 +269,7 @@
         // --- Authentication Logic ---
         const handleLogin = async () => {
             if (!auth) {
-                showToast("Firebase 설정 오류로 로그인할 수 없습니다.");
+                showToast("Firebase 설정(apiKey 등)이 비어있습니다. 코드를 확인해주세요.");
                 return;
             }
             try {
@@ -267,6 +291,8 @@
         // Initial Auth Check (Safe Version with Timeout)
         const initAuth = async () => {
             if (!auth) {
+                // Auth 객체가 없으면 바로 게스트 뷰 표시
+                console.warn("Auth object not initialized, showing guest view.");
                 setAuthStateUI(null);
                 return;
             }
