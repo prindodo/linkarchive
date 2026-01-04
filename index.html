@@ -175,13 +175,20 @@
         import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Configuration & Init ---
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'link-archive-default';
-        
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const provider = new GoogleAuthProvider();
+        let app, auth, db, provider;
+        let appId = 'link-archive-default';
+
+        try {
+            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+            appId = typeof __app_id !== 'undefined' ? __app_id : 'link-archive-default';
+            
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            provider = new GoogleAuthProvider();
+        } catch (e) {
+            console.error("Firebase initialization failed:", e);
+        }
 
         // --- State Management ---
         let currentUser = null;
@@ -214,8 +221,33 @@
         // Set Copyright Year
         els.year.textContent = new Date().getFullYear();
 
+        // --- Safe UI Transition Helper ---
+        const setAuthStateUI = (user) => {
+            // Force remove loader
+            els.loadingAuth.classList.add('hidden');
+            
+            if (user) {
+                els.loginBtn.classList.add('hidden');
+                els.userInfo.classList.remove('hidden');
+                els.userInfo.classList.add('flex');
+                els.userEmail.textContent = user.isAnonymous ? "익명 사용자" : user.email?.split('@')[0];
+                els.guestView.classList.add('hidden');
+                els.appView.classList.remove('hidden');
+            } else {
+                els.loginBtn.classList.remove('hidden');
+                els.userInfo.classList.add('hidden');
+                els.userInfo.classList.remove('flex');
+                els.guestView.classList.remove('hidden');
+                els.appView.classList.add('hidden');
+            }
+        };
+
         // --- Authentication Logic ---
         const handleLogin = async () => {
+            if (!auth) {
+                showToast("Firebase 설정 오류로 로그인할 수 없습니다.");
+                return;
+            }
             try {
                 await signInWithPopup(auth, provider);
             } catch (error) {
@@ -228,50 +260,61 @@
             }
         };
 
-        const handleLogout = () => signOut(auth);
-
-        // Initial Auth Check (Follows Rule 3)
-        const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            }
-            // Note: We don't force anonymous login here for a "user app" feel, 
-            // relying on the UI to prompt login.
+        const handleLogout = () => {
+            if(auth) signOut(auth);
         };
-        initAuth();
 
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            els.loadingAuth.classList.add('hidden');
-
-            if (user) {
-                // UI: Show App
-                els.loginBtn.classList.add('hidden');
-                els.userInfo.classList.remove('hidden');
-                els.userInfo.classList.add('flex');
-                els.userEmail.textContent = user.isAnonymous ? "익명 사용자" : user.email?.split('@')[0];
-                els.guestView.classList.add('hidden');
-                els.appView.classList.remove('hidden');
-                
-                // Firestore: Start Listening
-                subscribeToLinks(user.uid);
-            } else {
-                // UI: Show Guest
-                els.loginBtn.classList.remove('hidden');
-                els.userInfo.classList.add('hidden');
-                els.userInfo.classList.remove('flex');
-                els.guestView.classList.remove('hidden');
-                els.appView.classList.add('hidden');
-                
-                // Firestore: Stop Listening
-                if (unsubscribeLinks) {
-                    unsubscribeLinks();
-                    unsubscribeLinks = null;
-                }
-                allLinks = [];
-                renderLinks();
+        // Initial Auth Check (Safe Version with Timeout)
+        const initAuth = async () => {
+            if (!auth) {
+                setAuthStateUI(null);
+                return;
             }
-        });
+
+            // Safety timeout: if auth takes too long, just show guest view
+            const safetyTimeout = setTimeout(() => {
+                if (els.loadingAuth.classList.contains('hidden')) return; // already handled
+                console.warn("Auth check timed out, defaulting to guest view");
+                setAuthStateUI(null);
+            }, 3000);
+
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                }
+                // Note: We don't force anonymous login here for a "user app" feel, 
+                // relying on the UI to prompt login. 
+                // However, onAuthStateChanged should fire immediately with null if not logged in.
+            } catch (error) {
+                console.error("Auth Init Error:", error);
+                // If token fails, clear timeout and show guest view
+                clearTimeout(safetyTimeout);
+                setAuthStateUI(null);
+            }
+        };
+
+        if (auth) {
+            onAuthStateChanged(auth, (user) => {
+                currentUser = user;
+                setAuthStateUI(user);
+
+                if (user) {
+                    subscribeToLinks(user.uid);
+                } else {
+                    if (unsubscribeLinks) {
+                        unsubscribeLinks();
+                        unsubscribeLinks = null;
+                    }
+                    allLinks = [];
+                    renderLinks();
+                }
+            });
+            // Start Init
+            initAuth();
+        } else {
+            // No auth service
+            setAuthStateUI(null);
+        }
 
         els.loginBtn.addEventListener('click', handleLogin);
         els.heroLoginBtn.addEventListener('click', handleLogin);
@@ -282,7 +325,7 @@
         // Add Link
         els.form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!currentUser) return;
+            if (!currentUser || !db) return;
 
             const url = els.urlInput.value.trim();
             // Default title to domain if empty
@@ -329,8 +372,8 @@
 
         // Listen for Links (Rule 2: No complex queries in JS memory sort)
         function subscribeToLinks(uid) {
+            if (!db) return;
             const colRef = collection(db, 'artifacts', appId, 'users', uid, 'urls');
-            // Using query purely for collection reference wrapper
             const q = query(colRef); 
 
             unsubscribeLinks = onSnapshot(q, (snapshot) => {
@@ -356,7 +399,7 @@
 
         // Delete Link
         window.deleteLink = async (id) => {
-            if (!currentUser || !confirm("정말 이 링크를 삭제하시겠습니까?")) return;
+            if (!currentUser || !db || !confirm("정말 이 링크를 삭제하시겠습니까?")) return;
             try {
                 const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'urls', id);
                 await deleteDoc(docRef);
